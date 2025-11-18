@@ -1,0 +1,11 @@
+django==5.2.8
+djangorestframework==3.16.1
+transformers==4.57.1
+torch==2.9.0+cpu ; platform_system == "Windows"
+pydantic==2.12.4
+pyyaml==6.0.3
+uvicorn==0.38.0
+# Optional for audio transcription:
+# openai-whisper
+
+

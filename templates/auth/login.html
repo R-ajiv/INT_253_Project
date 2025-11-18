@@ -1,0 +1,43 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In · Helpdesk Pulse</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{% static 'css/main.css' %}">
+</head>
+<body class="auth-body">
+    <div class="auth-container">
+        <div class="auth-card">
+            <div class="auth-brand">
+                <div class="brand-badge"></div>
+                <div>
+                    <h1>Helpdesk Pulse</h1>
+                    <p>Welcome back. Sign in to access your sentiment dashboard.</p>
+                </div>
+            </div>
+            <form method="post" class="auth-form">
+                {% csrf_token %}
+                {% if form.non_field_errors %}
+                    <div class="auth-error">{{ form.non_field_errors|join:', ' }}</div>
+                {% endif %}
+                <label>
+                    <span>Username</span>
+                    {{ form.username }}
+                </label>
+                <label>
+                    <span>Password</span>
+                    {{ form.password }}
+                </label>
+                <button type="submit">Sign In</button>
+            </form>
+            {% comment %} <p class="auth-info">Use your Django admin credentials or create a new user via `createsuperuser`.</p> {% endcomment %}
+        </div>
+    </div>
+</body>
+</html>
+

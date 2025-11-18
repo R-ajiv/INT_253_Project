@@ -1,0 +1,427 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Helpdesk Sentiment Intelligence</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{% static 'css/main.css' %}">
+</head>
+<body>
+    <div class="app-container">
+        <header class="top-nav">
+            <div class="brand">
+                <div class="brand-logo">AI</div>
+                <div>
+                    <h1>Helpdesk Pulse</h1>
+                    <p>Sentiment intelligence for customer support</p>
+                </div>
+            </div>
+            <div class="nav-actions">
+                <div class="user-pill">
+                    <div class="user-avatar">{{ request.user.username|slice:':1'|upper }}</div>
+                    <div>
+                        <strong>{{ request.user.get_full_name|default:request.user.username }}</strong><br>
+                        <span>{{ request.user.email|default:"Authenticated user" }}</span>
+                    </div>
+                </div>
+                <form method="post" action="{% url 'logout' %}">
+                    {% csrf_token %}
+                    <button type="submit" class="logout-btn">Logout</button>
+                </form>
+            </div>
+        </header>
+
+        <main class="content">
+            <section class="hero">
+                <h2>Understand every conversation in seconds.</h2>
+                <p>Paste a transcript or upload a recording to classify customer mood as positive or negative. We mask common PII patterns before scoring and highlight the segments that drive the outcome.</p>
+            </section>
+
+            <section class="metrics">
+                <div class="metric">
+                    <span>Total analyses</span>
+                    <strong id="metric-total">0</strong>
+                    <span class="muted">Session count</span>
+                </div>
+                <div class="metric">
+                    <span>Positive share</span>
+                    <strong id="metric-positive">0%</strong>
+                    <span class="muted">Across recent submissions</span>
+                </div>
+                <div class="metric">
+                    <span>Negative share</span>
+                    <strong id="metric-negative">0%</strong>
+                    <span class="muted">Watch for spikes</span>
+                </div>
+            </section>
+
+            <section class="analysis-grid">
+                <article class="card">
+                    <h3>Analyze transcript</h3>
+                    <p>Paste a conversation transcript below. Identifiers like emails, SSNs, and long numbers are replaced during preprocessing.</p>
+                    <form id="text-form">
+                        <textarea id="transcript" placeholder="Paste call transcript here..."></textarea>
+                        <button type="submit" id="text-submit">Run analysis</button>
+                    </form>
+                    <div id="text-result" class="result-card empty">Results will appear here after analysis.</div>
+                </article>
+
+                <article class="card">
+                    <h3>Analyze audio</h3>
+                    <p>Upload a recording ({{ call_input.allowed_audio_extensions|join:', ' }} · up to {{ call_input.max_file_mb }} MB). Audio transcription requires the optional Whisper dependency.</p>
+                    <form id="audio-form" enctype="multipart/form-data">
+                        <div class="file-input">
+                            <input type="file" id="audio-file" accept="audio/*">
+                        </div>
+                        <button type="submit" id="audio-submit">Upload &amp; analyze</button>
+                    </form>
+                    <div id="audio-result" class="result-card empty">Audio insights will appear here after processing.</div>
+                </article>
+            </section>
+
+            <section class="history">
+                <h3>Recent analyses</h3>
+                <div id="analysis-feed" class="history-list">
+                    <p class="muted">Run an analysis to populate this list.</p>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <div class="credits">© {% now "Y" %} Helpdesk Pulse. All rights reserved. Crafted by Rajiv.</div>
+        </footer>
+    </div>
+
+    <script id="initial-payload" type="application/json">{{ initial_payload|safe }}</script>
+    <script>
+    const labelMap = { positive: 'Positive', negative: 'Negative', neutral: 'Neutral', mixed: 'Mixed' };
+
+    const initialElement = document.getElementById('initial-payload');
+    const initialData = initialElement ? JSON.parse(initialElement.textContent) : { counts: {}, history: [], total: 0 };
+    const initialCounts = initialData.counts || {};
+
+    const getCookie = (name) => {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) {
+            return parts.pop().split(';').shift();
+        }
+        return '';
+    };
+
+    const csrfToken = getCookie('csrftoken');
+
+    const state = {
+        totalAnalyses: initialData.total || 0,
+        labelCounts: {
+            positive: initialCounts.positive || 0,
+            negative: initialCounts.negative || 0,
+            neutral: initialCounts.neutral || 0,
+            mixed: initialCounts.mixed || 0,
+        },
+        history: initialData.history || []
+    };
+
+    const elements = {
+        total: document.getElementById('metric-total'),
+        positive: document.getElementById('metric-positive'),
+        negative: document.getElementById('metric-negative'),
+        textResult: document.getElementById('text-result'),
+        audioResult: document.getElementById('audio-result'),
+        feed: document.getElementById('analysis-feed')
+    };
+
+    const escapeHtml = (value = '') => value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+
+    const formatText = (value = '') => escapeHtml(value).replace(/\n/g, '<br>');
+
+    const setLoading = (button, loading) => {
+        if (!button) return;
+        button.disabled = loading;
+        button.textContent = loading ? 'Processing…' : button.dataset.defaultText;
+    };
+
+    const renderSummary = (data) => {
+        if (!data) return '';
+        const label = data.label || 'neutral';
+        const confidence = data.confidence ? Math.round(data.confidence * 100) : null;
+        const distribution = data.distribution || {};
+        const distributionHtml = Object.keys(distribution).length
+            ? `<div class="distribution">${Object.entries(distribution)
+                .map(([key, value]) => `<span>${labelMap[key] || key}: ${Math.round(value * 100)}%</span>`)
+                .join('')}</div>`
+            : '';
+
+        return `
+            <div>
+                <span class="summary-pill ${label}">${labelMap[label] || label}</span>
+                ${confidence ? `<p class="muted">Average confidence ${confidence}%</p>` : ''}
+                ${distributionHtml}
+            </div>
+        `;
+    };
+
+    const renderSegments = (segments) => {
+        if (!segments || !segments.length) return '';
+        return `
+            <div class="segments">
+                ${segments.map(seg => `
+                    <div class="segment-item">
+                        <h4>${labelMap[seg.label] || seg.label} · ${(seg.score * 100).toFixed(1)}%</h4>
+                        <p>${formatText(seg.segment)}</p>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    };
+
+    const renderTranscriptPreview = (text) => {
+        if (!text) return '';
+        return `<div class="transcript-preview">${formatText(text)}</div>`;
+    };
+
+    const renderResultCard = (result, extra = '') => {
+        if (!result) {
+            return '<div class="muted">No data yet.</div>';
+        }
+        const summary = result.summary || result;
+        const segments = result.segments;
+        return `
+            ${extra}
+            ${renderSummary(summary)}
+            ${renderSegments(segments)}
+        `;
+    };
+
+    const updateMetrics = () => {
+        const total = state.totalAnalyses || 0;
+        let positive = 0;
+        let negative = 0;
+        if (total > 0) {
+            positive = Math.round((state.labelCounts.positive / total) * 100);
+            negative = Math.round((state.labelCounts.negative / total) * 100);
+        }
+        elements.total.textContent = String(state.totalAnalyses);
+        elements.positive.textContent = `${positive}%`;
+        elements.negative.textContent = `${negative}%`;
+    };
+
+    // helper: remove one entry from state.history, adjust label counts and totals
+    const removeResultFromState = (predicate) => {
+        const idx = state.history.findIndex(predicate);
+        if (idx === -1) return false;
+        const entry = state.history[idx];
+        // decrement label count if present
+        if (entry && entry.label && state.labelCounts[entry.label] !== undefined) {
+            state.labelCounts[entry.label] = Math.max(0, state.labelCounts[entry.label] - 1);
+        }
+        state.history.splice(idx, 1);
+        state.totalAnalyses = Math.max(0, state.totalAnalyses - 1);
+        updateMetrics();
+        renderHistory();
+        return true;
+    };
+
+    const renderHistory = () => {
+        elements.feed.innerHTML = '';
+        if (!state.history.length) {
+            elements.feed.innerHTML = '<p class="muted">Run an analysis to populate this list.</p>';
+            return;
+        }
+        state.history.forEach((entry) => {
+            const item = document.createElement('div');
+            item.className = 'history-item';
+            const summaryHtml = renderSummary(entry);
+            const segmentsHtml = renderSegments(entry.segments || []);
+            const transcriptHtml = entry.transcript_preview ? `<div class="transcript-preview">${formatText(entry.transcript_preview)}</div>` : '';
+            // Always show a delete button so it's visible in the UI.
+            // If the entry is persisted it will include an id and the button will
+            // trigger a server-side DELETE; otherwise the button will remove the
+            // item locally.
+            const deleteBtnHtml = `
+                <button class="delete-btn" data-id="${entry.id || ''}" aria-label="Delete" ${entry.id ? '' : 'title="Not yet saved"'}>
+                    Delete
+                </button>`;
+            item.innerHTML = `
+                <header>
+                    <strong>${labelMap[entry.label] || entry.label}</strong>
+                    <div>
+                        <time>${new Date(entry.created_at || Date.now()).toLocaleTimeString()}</time>
+                        ${deleteBtnHtml}
+                    </div>
+                </header>
+                <p class="muted">Source: ${entry.source || 'Manual'}</p>
+                ${summaryHtml}
+                ${segmentsHtml}
+                ${transcriptHtml}
+            `;
+            elements.feed.appendChild(item);
+        });
+    };
+
+    const registerResult = (result, source, transcriptPreview = '') => {
+        if (!result) return;
+        const summary = result.summary || result;
+        state.totalAnalyses += 1;
+        if (summary.label && state.labelCounts[summary.label] !== undefined) {
+            state.labelCounts[summary.label] += 1;
+        }
+        state.history.unshift({
+            id: result.result_id || result.id || null,
+            label: summary.label,
+            confidence: summary.confidence || summary.average_score || 0.5,
+            distribution: summary.distribution || {},
+            segments: result.segments || [],
+            transcript_preview: transcriptPreview,
+            source,
+            created_at: new Date().toISOString(),
+        });
+        if (state.history.length > 12) {
+            state.history.pop();
+        }
+        updateMetrics();
+        renderHistory();
+    };
+
+    updateMetrics();
+    renderHistory();
+
+    const textForm = document.getElementById('text-form');
+    const textButton = document.getElementById('text-submit');
+    textButton.dataset.defaultText = textButton.textContent;
+
+    textForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const transcript = document.getElementById('transcript').value.trim();
+        if (!transcript) {
+            elements.textResult.classList.add('empty');
+            elements.textResult.innerHTML = 'Please provide a transcript to analyze.';
+            return;
+        }
+        setLoading(textButton, true);
+        try {
+            const response = await fetch('/api/sentiment/analyze/text/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': csrfToken
+                },
+                credentials: 'same-origin',
+                body: JSON.stringify({ transcript })
+            });
+            const payload = await response.json();
+            const analysis = payload.analysis || payload;
+            elements.textResult.classList.remove('empty');
+            elements.textResult.innerHTML = renderResultCard(analysis);
+            registerResult({ ...analysis, result_id: payload.result_id }, 'Transcript', transcript);
+        } catch (error) {
+            elements.textResult.classList.add('empty');
+            elements.textResult.innerHTML = 'Something went wrong. Please retry.';
+        } finally {
+            setLoading(textButton, false);
+        }
+    });
+
+    const audioForm = document.getElementById('audio-form');
+    const audioInput = document.getElementById('audio-file');
+    const audioButton = document.getElementById('audio-submit');
+    audioButton.dataset.defaultText = audioButton.textContent;
+
+    audioForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!audioInput.files.length) {
+            elements.audioResult.classList.add('empty');
+            elements.audioResult.innerHTML = 'Attach an audio file to continue.';
+            return;
+        }
+        const formData = new FormData();
+        formData.append('audio_file', audioInput.files[0]);
+        setLoading(audioButton, true);
+        try {
+            const response = await fetch('/api/sentiment/analyze/audio/', {
+                method: 'POST',
+                headers: { 'X-CSRFToken': csrfToken },
+                credentials: 'same-origin',
+                body: formData
+            });
+            const payload = await response.json();
+            if (payload.analysis) {
+                elements.audioResult.classList.remove('empty');
+                elements.audioResult.innerHTML = renderResultCard(payload.analysis, renderTranscriptPreview(payload.transcript));
+                registerResult({ ...payload.analysis, result_id: payload.result_id }, 'Audio', payload.transcript || '');
+            } else if (payload.error || payload.errors) {
+                const message = payload.error || Object.values(payload.errors).flat().join(', ');
+                elements.audioResult.classList.add('empty');
+                elements.audioResult.innerHTML = escapeHtml(message);
+            } else {
+                elements.audioResult.classList.add('empty');
+                elements.audioResult.innerHTML = 'Unable to analyze audio.';
+            }
+        } catch (error) {
+            elements.audioResult.classList.add('empty');
+            elements.audioResult.innerHTML = 'Audio processing failed. Please retry.';
+        } finally {
+            setLoading(audioButton, false);
+        }
+    });
+
+    // delegated click handler for delete buttons in the history feed
+    elements.feed.addEventListener('click', async (ev) => {
+        const btn = ev.target.closest && ev.target.closest('.delete-btn');
+        if (!btn) return;
+        const id = btn.dataset.id;
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = id ? 'Deleting…' : 'Removing…';
+
+        // If there's no id, just remove from local state (not persisted yet)
+        if (!id) {
+            const createdAt = btn.closest('.history-item')?.querySelector('time')?.textContent;
+            // try to remove by created_at first, fallback to first matching label/transcript_preview
+            let removed = false;
+            if (createdAt) {
+                removed = removeResultFromState(item => String(item.created_at) === String(new Date(createdAt).toISOString()) || item.created_at === createdAt);
+            }
+            if (!removed) {
+                const preview = btn.closest('.history-item')?.querySelector('.transcript-preview')?.textContent || '';
+                const label = btn.closest('.history-item')?.querySelector('strong')?.textContent || '';
+                removed = removeResultFromState(item => (preview && item.transcript_preview && item.transcript_preview.includes(preview)) || (label && item.label === label));
+            }
+            if (!removed) {
+                // final fallback: remove first item
+                removeResultFromState(() => true);
+            }
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/sentiment/results/${id}/`, {
+                method: 'DELETE',
+                headers: { 'X-CSRFToken': csrfToken },
+                credentials: 'same-origin',
+            });
+            if (response.status === 204 || response.ok) {
+                // remove corresponding entry and adjust label counts
+                removeResultFromState(item => String(item.id) === String(id));
+            } else {
+                btn.disabled = false;
+                btn.textContent = originalText;
+            }
+        } catch (e) {
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    });
+    </script>
+</body>
+</html>
+

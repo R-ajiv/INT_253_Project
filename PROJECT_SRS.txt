@@ -1,0 +1,232 @@
+Software Requirements Specification (SRS)
+Helpdesk Sentiment Analysis
+
+Document Control
+----------------
+Author: Rajiv Kumar Singh
+Date: 2025-11-12
+Version: 1.0
+Status: Draft
+
+1. Introduction
+---------------
+1.1 Purpose
+This SRS describes functional and non-functional requirements for the Helpdesk Sentiment Analysis application. The system analyzes customer support call transcripts and audio recordings to produce sentiment (positive, negative, neutral, mixed) and segment-level annotations. It is a Django-based web application with REST APIs and a lightweight single-page UI.
+
+1.2 Scope
+The system supports:
+- Text-based sentiment analysis of pasted transcripts.
+- Optional audio transcription (OpenAI Whisper) and sentiment analysis of the resulting transcript.
+- Persistence of analysis results and a web UI with recent-history and metric summary.
+- Healthcheck for model and ffmpeg availability.
+- Authenticated API and UI for end users.
+
+1.3 Definitions, Acronyms and Abbreviations
+- SRS: Software Requirements Specification
+- UI: User Interface
+- API: Application Programming Interface
+- FFmpeg: multimedia framework used by Whisper
+- Whisper: openai-whisper audio transcription library
+- DB: Database (SQLite in current workspace)
+
+1.4 References
+- Project repository files: README.md, manage.py, helpdesk_sentiment/settings.py
+- Relevant modules: sentiment.views, sentiment.utils.audio, templates/sentiment/index.html
+
+2. Overall Description
+----------------------
+2.1 Product Perspective
+The product is a standalone Django web application. Core components:
+- REST API endpoints in `sentiment/urls.py`.
+- Views and business logic in `sentiment/views.py` and `sentiment/ml/service.py`.
+- Audio helper in `sentiment/utils/audio.py` that interfaces with Whisper and ffmpeg.
+- Simple single-page UI `templates/sentiment/index.html` with client-side JS for metrics and history.
+- Model `sentiment.models.SentimentAnalysisResult` for persisting results.
+
+2.2 Product Functions (high level)
+- Authenticate users (Django auth).
+- Analyze pasted text via POST /api/sentiment/analyze/text/.
+- Upload audio file and transcribe+analyze via POST /api/sentiment/analyze/audio/.
+- Return health status via GET /api/sentiment/health/ including ffmpeg availability.
+- Persist results in DB and return `result_id` after analysis.
+- Delete a saved result via DELETE /api/sentiment/results/<id>/ (owner-only).
+- Present a web UI showing recent analyses, metrics and delete controls.
+
+2.3 User Characteristics
+- Authenticated support analysts or developers. Familiar with web apps and basic audio file upload.
+
+2.4 Constraints
+- Audio transcription is optional and requires `openai-whisper` and `ffmpeg` installed.
+- System currently uses SQLite (db.sqlite3). For production, a more robust DB is recommended.
+- Large ML models may require GPU/node resources; the prototype expects CPU runtime.
+
+3. Specific Requirements
+-------------------------
+3.1 Functional Requirements
+
+FR-1: Authentication
+- The system shall require users to login before accessing the analysis UI and API endpoints.
+- Authentication built on Django sessions.
+
+FR-2: Healthcheck
+- The system shall expose GET /api/sentiment/health/ returning JSON with keys: status, model, output_type, ffmpeg_available, ffmpeg_path.
+- ffmpeg_available shall be `true` if the Django process can find or is configured with an explicit `FFMPEG_PATH` that exists.
+
+FR-3: Text Analysis API
+- Endpoint: POST /api/sentiment/analyze/text/
+- Request: JSON { "transcript": "..." }
+- Response: JSON { "analysis": <analysis object>, "result_id": <int> }
+- Behavior: preprocess text, run sentiment model, save result to DB, return analysis and saved id.
+
+FR-4: Audio Analysis API
+- Endpoint: POST /api/sentiment/analyze/audio/
+- Request: multipart/form-data with `audio_file` file field.
+- Response: JSON { "transcript": "...", "analysis": <analysis object>, "result_id": <int> } on success.
+- Behavior: save uploaded file to a temp file, ensure Whisper and ffmpeg available, transcribe audio, preprocess, run sentiment model, save and return id.
+- Errors: If transcription fails or ffmpeg missing, return 400 with `error` message.
+
+FR-5: Persistence of Results
+- The system shall persist results in `SentimentAnalysisResult` model with fields: user, source, summary_label, summary_confidence, distribution, segments, transcript_preview, created_at.
+- The analyze endpoints shall save an instance and return its id.
+
+FR-6: Delete Result API
+- Endpoint: DELETE /api/sentiment/results/<id>/
+- Behavior: authenticated users may delete only their own results. Returns 204 on success, 404 if not found.
+
+FR-7: UI: Recent Analyses and Delete
+- The `ui_home` template shall embed JSON `initial_payload` with recent results (id included) and metric counts.
+- The frontend shall render each history item with a Delete button if the entry has an id; Delete shall call the DELETE API and remove the entry from UI on success.
+
+3.2 Non-Functional Requirements
+
+NFR-1: Security
+- All API endpoints must require authentication.
+- Deletion shall validate ownership before deleting.
+- CSRF protection must be in place for UI calls (X-CSRFToken via cookie header is used in the template JS).
+
+NFR-2: Reliability and Fault Handling
+- The audio transcription function must check for ffmpeg and return a clear error if missing.
+- Temporary files created during transcription must be removed in a finally block.
+
+NFR-3: Performance
+- Reasonable response for single transcript analysis (sub-second for small text). Audio transcription may be multiple seconds depending on Whisper model size and resources.
+- Concurrency: the system must avoid allowing unbounded parallel ffmpeg/whisper processes. A production design should queue audio tasks.
+
+NFR-4: Maintainability
+- Code organized into views, utils, ml/service and templates. Tests in sentiment/tests.py.
+
+NFR-5: Portability
+- Runs on Windows and Linux. On Windows, users must install ffmpeg and/or set `FFMPEG_PATH` in settings.
+
+4. External Interface Requirements
+----------------------------------
+4.1 User Interfaces
+- Web UI at root (/). Login at /accounts/login/. Admin at /admin/.
+- Recent analyses list with Delete controls and metrics display.
+
+4.2 API Interfaces
+- REST endpoints under /api/sentiment/ as described in functional requirements.
+- JSON responses and form-data for audio uploads.
+
+4.3 Hardware/Software Interfaces
+- Requires Python 3.11+ (or the project's configured version), Django, optional Whisper and ffmpeg for audio.
+- DB: SQLite for prototype; support for other relational DBs if configured.
+
+5. System Architecture and Design Constraints
+---------------------------------------------
+- Monolithic Django app with server-side rendering for initial UI and client-side JS for interactions.
+- Sentiment model accessed through `SentimentService` abstraction to allow switching models or remote inference.
+- Audio helper wraps Whisper and ensures ffmpeg availability (with `FFMPEG_PATH` config supported).
+
+6. Data Model
+--------------
+SentimentAnalysisResult (fields summary):
+- id: integer PK
+- user: foreign key to auth.User
+- source: enum (TRANSCRIPT, AUDIO)
+- summary_label: string
+- summary_confidence: float
+- distribution: JSON/dict
+- segments: JSON/list of segment objects (label, score, segment text)
+- transcript_preview: text
+- created_at: datetime
+
+7. Use Cases
+------------
+Use Case UC-1: User runs a text analysis
+1. User logs in.
+2. User pastes transcript and clicks Run analysis.
+3. Client posts to /api/sentiment/analyze/text/.
+4. Server returns analysis and saved result id.
+5. Client registers result in state and shows metrics.
+
+Use Case UC-2: User uploads audio and analyzes
+1. User uploads file and submits.
+2. Server saves file, ensures Whisper and ffmpeg available.
+3. Server runs transcription and analysis, saves result, returns transcript and id.
+4. Client displays transcript and analysis and adds record to history.
+
+Use Case UC-3: User deletes a persisted result
+1. User clicks Delete on a history item with id.
+2. Client sends DELETE /api/sentiment/results/<id>/ with CSRF token.
+3. Server validates ownership and deletes record; returns 204.
+4. Client removes item and updates metrics.
+
+8. Acceptance Criteria
+----------------------
+- All endpoints require authentication and return correct success/error codes.
+- Text and audio analyze endpoints return `result_id` for persisted results.
+- Health endpoint reports correct ffmpeg availability for the running process.
+- Deleting a result removes it from the DB and UI and updates metrics correctly.
+- Temporary files are removed after transcription attempts.
+
+9. Test Plan (high level)
+--------------------------
+- Unit tests for `transcribe_audio_file` with ffmpeg present/absent (mocking); ensure temp file cleanup.
+- API tests for analyze text/audio endpoints, including authentication and validation errors.
+- API test for DELETE result authorization and deletion.
+- Integration test: run UI flow: analyze -> persisted -> delete -> verify counts and DB state.
+
+10. Deployment and Installation
+-------------------------------
+10.1 Development setup (quick)
+- python -m venv .venv
+- .\.venv\Scripts\activate (Windows PowerShell) or source .venv/bin/activate
+- pip install -r requirements.txt
+- python manage.py migrate
+- python manage.py createsuperuser
+- python manage.py runserver
+
+10.2 Audio setup (Windows)
+- Install ffmpeg and add its bin dir (e.g. C:\ffmpeg\bin) to PATH, or set `FFMPEG_PATH` in Django settings to the executable or directory.
+- pip install openai-whisper (optional, large dependency)
+
+11. Security Considerations
+---------------------------
+- Only authenticated users may use APIs and UI features.
+- Ensure CSRF protection for state-modifying UI requests (DELETE uses X-CSRFToken in JS).
+- Validate and restrict uploaded audio file size and allowed extensions as per `CALL_INPUT_FORMAT` settings.
+- Consider rate limiting and quotas to avoid abuse of CPU-intensive audio transcription.
+
+12. Known Limitations and Future Enhancements
+----------------------------------------------
+- Current architecture runs transcription synchronously; move to background workers for production (Celery/RQ) to avoid blocking web workers.
+- Add paginated GET for results and server-side listing.
+- Provide role-based access, export features, and bulk-delete.
+- Add E2E tests and monitoring for ffmpeg/Whisper failures.
+
+13. Appendices
+--------------
+A. File map (key files)
+- helpdesk_sentiment/settings.py
+- sentiment/views.py
+- sentiment/urls.py
+- sentiment/models.py
+- sentiment/utils/audio.py
+- templates/sentiment/index.html
+- requirements.txt
+
+B. Contact
+- Project maintainer: (set in repo metadata or README)
+
+--- End of SRS ---
