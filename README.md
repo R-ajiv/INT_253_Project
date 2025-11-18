@@ -53,6 +53,12 @@ pip install openai-whisper
 
 Large models may require FFmpeg. See Whisper docs.
 
+## Screenshots
+<img width="417" height="390" alt="image" src="https://github.com/user-attachments/assets/d1a484bd-a803-4e92-bac1-c7e86aa6e9cc" />
+<img width="899" height="864" alt="image" src="https://github.com/user-attachments/assets/a73912f2-a251-4bf4-92e7-c3042498a0ea" />
+<img width="873" height="662" alt="image" src="https://github.com/user-attachments/assets/ab6ef0e4-612b-4c28-91f0-1c86a0aae681" />
+
+
 ## Notes on ML
 - This prototype uses a general sentiment classifier; for helpdesk domain adaptation, fine-tune on labeled support-call data.
 - Consider bias evaluation and calibration across customer demographics.
